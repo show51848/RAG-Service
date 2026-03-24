@@ -51,7 +51,7 @@
 讀取 PDF/TXT                      Embed 問題
    │                                    │
    ▼                                    ▼
-分塊 (chunk 500 / overlap 50)    ChromaDB 向量搜尋
+分塊 (按照語意切chunk)    ChromaDB 向量搜尋
    │                              (user_id + doc_id filter)
    ▼                                    │
 Anthropic Embedding                     ▼
