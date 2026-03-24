@@ -9,8 +9,6 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     CHROMA_PERSIST_DIR: str = "./chroma_data"
     UPLOAD_DIR: str = "./uploads"
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 50
     TOP_K: int = 5
 
     class Config:
