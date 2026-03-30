@@ -41,3 +41,6 @@ data/
 
 # Docker
 *.log
+
+# Test files
+test.txt

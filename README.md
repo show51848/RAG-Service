@@ -266,6 +266,43 @@ collection.delete(where={"doc_id": doc_id})
 
 `eval()` 允許任意 Python 執行，是嚴重安全漏洞。本專案自訂 AST 遍歷器，只允許白名單運算子（+、-、*、/、//、%、**），完全阻斷注入攻擊。
 
+**eval 的危險性**
+
+```python
+# 攻擊者傳入惡意運算式
+expression = "__import__('os').system('rm -rf /')"
+result = eval(expression)   # 直接執行系統指令，伺服器毀滅
+```
+
+**本專案的 AST 白名單做法**
+
+```python
+import ast
+
+# 只允許這些節點類型通過
+SAFE_NODES = (
+    ast.Expression,
+    ast.BinOp,   ast.UnaryOp, ast.Num, ast.Constant,
+    ast.Add,     ast.Sub,     ast.Mult, ast.Div,
+    ast.FloorDiv,ast.Mod,     ast.Pow,
+    ast.UAdd,    ast.USub,
+)
+
+def safe_eval(expression: str) -> float:
+    tree = ast.parse(expression, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, SAFE_NODES):
+            raise ValueError(f"不允許的運算：{type(node).__name__}")
+    return eval(compile(tree, "<string>", "eval"))
+
+# 合法運算式 → 正常計算
+safe_eval("(10 / 2) ** 2 + 3 * 4")   # 37.0
+
+# 惡意注入 → 直接拒絕，不執行任何系統呼叫
+safe_eval("__import__('os').system('rm -rf /')")
+# ValueError: 不允許的運算：Call
+```
+
 ### Ingestion Pipeline
 
 ```
