@@ -10,6 +10,40 @@
 
 ---
 
+## Current Demo Stack
+
+> This is a **single-container demo** optimised for quick local setup and portfolio review.
+> See [Production Upgrade Path](#production-upgrade-path) below for what a real deployment would change.
+
+| Layer | Demo choice | Why it's fine for demo |
+|-------|-------------|------------------------|
+| Database | SQLite | Zero-setup, file-based, sufficient for single-node |
+| Vector store | ChromaDB (embedded) | No extra service needed; data persisted in `chroma_data/` volume |
+| Embedding | `all-MiniLM-L6-v2` via ONNX (local) | No API key, runs in-process, fast |
+| LLM | Claude Haiku via Anthropic API | Cheap, fast, good enough for RAG responses |
+| Task queue | Synchronous (inline ingestion) | Simplifies architecture; acceptable latency for small files |
+| Auth | JWT / Argon2, single service | Stateless; no Redis session store needed at this scale |
+
+---
+
+## Production Upgrade Path
+
+A production version of this service would replace or add:
+
+```
+Demo                          Production
+─────────────────────────────────────────────────────────────
+SQLite                   →    PostgreSQL (asyncpg + Alembic)
+ChromaDB embedded        →    Qdrant / Pinecone (separate service)
+Synchronous ingestion    →    Celery + Redis (async task queue)
+Local file storage       →    S3-compatible object storage (boto3)
+Single container         →    Kubernetes Deployment + HPA
+Single-stage Dockerfile  →    Multi-stage build, non-root user
+Secret in .env           →    AWS Secrets Manager / Vault
+```
+
+---
+
 ## 技術架構
 
 ```
@@ -35,8 +69,13 @@
 │  ┌──────────────────────┐  ┌──────────────────────┐  │
 │  │  ChromaDB (Vectors)  │  │  Anthropic Claude    │  │
 │  │  chroma_data/ 持久化  │  │  claude-haiku-4-5    │  │
-│  │  filter: user_id /   │  │  Embedding + LLM     │  │
+│  │  filter: user_id /   │  │  Answer generation   │  │
 │  │          doc_id      │  └──────────────────────┘  │
+│  └──────────────────────┘                            │
+│  ┌──────────────────────┐                            │
+│  │  all-MiniLM-L6-v2    │  ← local ONNX embedding   │
+│  │  (runs in-process,   │    no external API needed  │
+│  │   no API key)        │                            │
 │  └──────────────────────┘                            │
 └──────────────────────────────────────────────────────┘
               ▲  docker compose up
@@ -49,16 +88,17 @@
    │                                    │
    ▼                                    ▼
 讀取 PDF/TXT                      Embed 問題
-   │                                    │
-   ▼                                    ▼
-分塊 (按照語意切chunk)    ChromaDB 向量搜尋
-   │                              (user_id + doc_id filter)
+   │                              (all-MiniLM-L6-v2, local)
    ▼                                    │
-Anthropic Embedding                     ▼
+分塊 (按語意段落切chunk)                 ▼
+   │                              ChromaDB 向量搜尋
+   ▼                              (user_id + doc_id filter)
+Embed chunks                            │
+(all-MiniLM-L6-v2, local ONNX)         ▼
    │                              取得 Top-K chunks
    ▼                                    │
 ChromaDB Upsert                         ▼
-(附 user_id / doc_id metadata)   Claude claude-haiku-4-5 生成答案
+(附 user_id / doc_id metadata)   Claude Haiku 生成答案
                                         │
                                         ▼
                                   回傳答案 + 引用來源
@@ -72,7 +112,7 @@ ChromaDB Upsert                         ▼
 |------|------|
 | **JWT 認證** | Argon2 密碼雜湊、Bearer Token、60 分鐘過期 |
 | **文件上傳** | PDF / TXT，MD5 去重，同步 ingestion pipeline |
-| **RAG 問答** | 語意向量搜尋 → Claude Haiku 生成含引用編號答案 |
+| **RAG 問答** | 本機語意向量搜尋 → Claude Haiku 生成含引用編號答案 |
 | **Tool Calling** | `/tools/calc` 安全運算式計算（AST，無 eval）；`/tools/docs` 文件摘要清單 |
 | **多用戶隔離** | ChromaDB metadata filter 以 `user_id` 嚴格隔離，不可越權讀取 |
 | **前端 SPA** | 純 HTML/CSS/JS，登入／註冊／上傳／問答一頁完成，零框架依賴 |
@@ -93,13 +133,18 @@ ChromaDB Upsert                         ▼
 cp .env.example .env
 ```
 
-編輯 `.env`：
+編輯 `.env`，填入必填欄位：
 
 ```env
+# 必填：至少 32 字元，產生方式：openssl rand -hex 32
+SECRET_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 必填：Anthropic API key
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
-SECRET_KEY=your-secret-key          # openssl rand -hex 32
-DATABASE_URL=sqlite:////app/data/rag.db
 ```
+
+> **Fail-fast 設計**：`SECRET_KEY` 或 `ANTHROPIC_API_KEY` 未設定時，服務啟動即報錯退出，
+> 不會用不安全的預設值默默跑起來。
 
 ### 2. 啟動服務
 
@@ -122,13 +167,17 @@ docker compose up --build
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env        # 填入 ANTHROPIC_API_KEY
+
+# 安裝包含測試工具的開發依賴
+pip install -r requirements-dev.txt
+
+cp .env.example .env        # 填入 SECRET_KEY 和 ANTHROPIC_API_KEY
 uvicorn app.main:app --reload --port 8000
 ```
 
 ```bash
-pytest tests/ -v            # 執行測試
+# 執行測試（不需要真實 API key，LLM 呼叫全部被 mock）
+pytest tests/ -v
 ```
 
 ---
@@ -260,48 +309,26 @@ where = {"$and": [{"user_id": user_id}, {"doc_id": {"$in": doc_ids}}]}
 collection.delete(where={"doc_id": doc_id})
 ```
 
-優點：架構簡單、管理容易、隔離由 ChromaDB 查詢層保證。
-
 ### 為何計算工具用 AST 而非 eval？
 
 `eval()` 允許任意 Python 執行，是嚴重安全漏洞。本專案自訂 AST 遍歷器，只允許白名單運算子（+、-、*、/、//、%、**），完全阻斷注入攻擊。
 
-**eval 的危險性**
-
 ```python
 # 攻擊者傳入惡意運算式
 expression = "__import__('os').system('rm -rf /')"
-result = eval(expression)   # 直接執行系統指令，伺服器毀滅
+eval(expression)   # 直接執行系統指令
+
+# AST 白名單：Call 節點不在允許清單 → 直接拒絕，不執行
+safe_eval(expression)  # ValueError: Unsupported AST node: Call
 ```
 
-**本專案的 AST 白名單做法**
+### 為何 Embedding 用本機模型而非 OpenAI API？
 
-```python
-import ast
-
-# 只允許這些節點類型通過
-SAFE_NODES = (
-    ast.Expression,
-    ast.BinOp,   ast.UnaryOp, ast.Num, ast.Constant,
-    ast.Add,     ast.Sub,     ast.Mult, ast.Div,
-    ast.FloorDiv,ast.Mod,     ast.Pow,
-    ast.UAdd,    ast.USub,
-)
-
-def safe_eval(expression: str) -> float:
-    tree = ast.parse(expression, mode="eval")
-    for node in ast.walk(tree):
-        if not isinstance(node, SAFE_NODES):
-            raise ValueError(f"不允許的運算：{type(node).__name__}")
-    return eval(compile(tree, "<string>", "eval"))
-
-# 合法運算式 → 正常計算
-safe_eval("(10 / 2) ** 2 + 3 * 4")   # 37.0
-
-# 惡意注入 → 直接拒絕，不執行任何系統呼叫
-safe_eval("__import__('os').system('rm -rf /')")
-# ValueError: 不允許的運算：Call
-```
+使用 `all-MiniLM-L6-v2`（透過 ChromaDB 內建的 ONNX Runtime 執行）：
+- 不需要額外的 API key
+- 無網路延遲，embedding 在本機完成
+- 多語言短文本的向量品質已足夠 RAG 使用
+- 降低每次上傳的費用（只有 LLM 生成答案才需要付費）
 
 ### Ingestion Pipeline
 
@@ -309,8 +336,8 @@ safe_eval("__import__('os').system('rm -rf /')")
 上傳檔案
   → MD5 去重（同用戶同檔案不重複索引）
   → PyMuPDF 解析 PDF / 純文字讀取
-  → 固定大小分塊（size=500, overlap=50）
-  → Anthropic Embedding API
+  → 按語意段落切塊（空白行或中文標題為切分點）
+  → all-MiniLM-L6-v2 本機 Embedding
   → ChromaDB 存向量 + metadata（user_id / doc_id / filename）
 ```
 
@@ -321,8 +348,8 @@ safe_eval("__import__('os').system('rm -rf /')")
 ```
 rag-service/
 ├── app/
-│   ├── main.py              # FastAPI app、CORS、路由掛載、lifespan
-│   ├── config.py            # pydantic-settings 環境變數
+│   ├── main.py              # FastAPI app、CORS（dev/prod 分離）、路由掛載
+│   ├── config.py            # pydantic-settings，fail-fast 驗證
 │   ├── database.py          # SQLAlchemy engine / session factory
 │   ├── dependencies.py      # JWT 驗證 Depends
 │   ├── models/              # SQLAlchemy ORM：User、Document
@@ -332,10 +359,15 @@ rag-service/
 │   └── vectorstore/         # ChromaDB client 封裝
 ├── frontend/
 │   └── index.html           # 單頁前端 SPA（零框架）
-├── tests/                   # pytest 整合測試
-├── Dockerfile
+├── tests/
+│   ├── conftest.py          # 測試環境變數（在 app import 前設定）
+│   ├── test_auth.py
+│   ├── test_docs.py
+│   └── test_chat.py
+├── Dockerfile               # 單階段 demo build（prod upgrade path 見檔案內註解）
 ├── docker-compose.yml
-├── requirements.txt
+├── requirements.txt         # 僅 production 依賴
+├── requirements-dev.txt     # -r requirements.txt + pytest
 └── .env.example
 ```
 
@@ -345,10 +377,12 @@ rag-service/
 
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
+| `SECRET_KEY` | **必填** | JWT 簽名金鑰，至少 32 字元；`openssl rand -hex 32` |
 | `ANTHROPIC_API_KEY` | **必填** | Anthropic API 金鑰 |
-| `SECRET_KEY` | `change-me` | JWT 簽名金鑰，正式環境請用 `openssl rand -hex 32` |
+| `APP_ENV` | `development` | `development` 或 `production`，影響 CORS 策略 |
+| `ALLOWED_ORIGINS` | localhost 系列 | CORS 允許來源，production 請設為真實 domain |
 | `DATABASE_URL` | `sqlite:///./rag.db` | SQLAlchemy 連線字串 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT 過期時間（分鐘）|
-| `CHUNK_SIZE` | `500` | 文件切塊大小（字元數）|
-| `CHUNK_OVERLAP` | `50` | 相鄰切塊重疊大小 |
 | `TOP_K` | `5` | 向量搜尋回傳最大筆數 |
+| `CHROMA_PERSIST_DIR` | `./chroma_data` | ChromaDB 持久化目錄 |
+| `UPLOAD_DIR` | `./uploads` | 上傳檔案儲存目錄 |

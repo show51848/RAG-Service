@@ -1,3 +1,5 @@
+# Production dependencies only.
+# For development and testing, use:  pip install -r requirements-dev.txt
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 sqlalchemy>=2.0.0
@@ -11,5 +13,3 @@ anthropic>=0.40.0
 chromadb>=0.5.0
 pymupdf>=1.24.0
 httpx>=0.27.0
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
