@@ -45,7 +45,7 @@ def parse_file(file_path: str) -> str:
 # 預編譯正則表達式：比在迴圈內每次重新編譯效能更好
 # 匹配中文序號開頭的段落標題，例如「一、前言」「二．說明」
 _CHINESE_HEADING = re.compile(r"^[一二三四五六七八九十百]+[、．.]")
-
+MAX_CHUNK_CHARS = 1000  # 單一 chunk 字元上限，避免超長段落塞爆 LLM context
 
 def chunk_text(text: str) -> list[str]:
     """Split text into chunks by blank lines or Chinese section headings.
@@ -67,11 +67,13 @@ def chunk_text(text: str) -> list[str]:
     current_lines: list[str] = []
 
     def flush() -> None:
-        """把目前累積的行組成一個 chunk 並清空暫存區。"""
-        block = "\n".join(current_lines).strip()
-        if block:
-            chunks.append(block)
-        current_lines.clear()
+    block = "\n".join(current_lines).strip()
+    if block:
+        # 超過上限就截斷，保留語意完整性優先，但避免 context 爆炸
+        if len(block) > MAX_CHUNK_CHARS:
+            block = block[:MAX_CHUNK_CHARS]
+        chunks.append(block)
+    current_lines.clear()
 
     i = 0
     while i < len(lines):
