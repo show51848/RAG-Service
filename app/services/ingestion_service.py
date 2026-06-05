@@ -67,13 +67,13 @@ def chunk_text(text: str) -> list[str]:
     current_lines: list[str] = []
 
     def flush() -> None:
-    block = "\n".join(current_lines).strip()
-    if block:
-        # 超過上限就截斷，保留語意完整性優先，但避免 context 爆炸
-        if len(block) > MAX_CHUNK_CHARS:
-            block = block[:MAX_CHUNK_CHARS]
-        chunks.append(block)
-    current_lines.clear()
+        """把目前累積的行組成一個 chunk 並清空暫存區。"""
+        block = "\n".join(current_lines).strip()
+        if block:
+            if len(block) > MAX_CHUNK_CHARS:
+                block = block[:MAX_CHUNK_CHARS]
+            chunks.append(block)
+        current_lines.clear()
 
     i = 0
     while i < len(lines):

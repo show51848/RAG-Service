@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
-from app.models.document import Document
+from app.models.document import Document, DocumentStatus
 from app.models.user import User
 from app.schemas.chat import CalcRequest, CalcResponse
 from app.schemas.document import DocumentSummary
@@ -51,7 +51,14 @@ def _safe_eval(node: ast.AST) -> float | int:
             raise ValueError(f"Unsupported binary operator: {op_type.__name__}")
         left = _safe_eval(node.left)
         right = _safe_eval(node.right)
-        return _OPERATORS[op_type](left, right)
+        # 防止 9**9**9 等指數爆炸型 DoS：限制指數上限為 1000
+        if op_type is ast.Pow and isinstance(right, (int, float)) and abs(right) > 1000:
+            raise ValueError("Exponent too large (max 1000)")
+        result = _OPERATORS[op_type](left, right)
+        # 防止整數無限膨脹（例如 2**1000 本身合法但結果是 302 位數，仍設上限）
+        if isinstance(result, int) and result.bit_length() > 4096:
+            raise ValueError("Result too large")
+        return result
     if isinstance(node, ast.UnaryOp):
         # 一元運算（例如 -5、+3）
         op_type = type(node.op)
@@ -122,7 +129,10 @@ def tools_docs(
     """
     docs = (
         db.query(Document)
-        .filter(Document.user_id == current_user.id)
+        .filter(
+            Document.user_id == current_user.id,
+            Document.status == DocumentStatus.indexed,
+        )
         .all()
     )
     return [DocumentSummary.model_validate(d) for d in docs]

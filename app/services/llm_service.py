@@ -59,7 +59,15 @@ def generate_answer(question: str, citations: list[Citation]) -> tuple[str, list
         # claude-haiku-4-5：速度快、費用低，適合 RAG 場景（答案主要來自文件，不需要 Opus 的深度推理）
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,  # RAG 回答通常不需要超長輸出，限制 token 控制費用
-        system=SYSTEM_PROMPT,
+        # system 用 list 格式搭配 cache_control，讓固定不變的 system prompt 被快取
+        # ephemeral 快取最長 5 分鐘，每次命中可省下 system prompt 的 input token 費用
+        system=[
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         messages=[
             {"role": "user", "content": user_message},
         ],

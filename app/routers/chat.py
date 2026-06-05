@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from sqlalchemy import and_
+
 from app.dependencies import get_current_user, get_db
 from app.models.document import Document
 from app.models.user import User
@@ -32,15 +34,25 @@ def query(
     - 路由層已經有 db session，適合做業務規則驗證
     - 讓服務層保持純粹，方便測試時 mock
     """
-    # 驗證 doc_ids 所有權：確保使用者不能查詢不屬於自己的文件
+    # 驗證 doc_ids 所有權：一次查詢取得所有符合的文件，比逐一 db.get 更有效率
     if body.doc_ids:
-        for did in body.doc_ids:
-            doc = db.get(Document, did)
-            if doc is None or doc.user_id != current_user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Document {did} not found",
+        owned = (
+            db.query(Document.id)
+            .filter(
+                and_(
+                    Document.id.in_(body.doc_ids),
+                    Document.user_id == current_user.id,
                 )
+            )
+            .all()
+        )
+        owned_ids = {row.id for row in owned}
+        missing = set(body.doc_ids) - owned_ids
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Document {next(iter(missing))} not found",
+            )
 
     # 向量搜尋：把問題轉成 embedding，找出最相關的文件片段
     citations = retrieve(

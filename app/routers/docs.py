@@ -19,6 +19,9 @@ router = APIRouter(prefix="/docs", tags=["documents"])
 # 允許的檔案副檔名白名單，拒絕所有其他格式
 ALLOWED_EXTENSIONS = {".pdf", ".txt"}
 
+# 單次上傳最大允許大小：50 MB
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
 
 @router.post(
     "/upload",
@@ -49,6 +52,11 @@ def upload_document(
 
     # 一次讀入記憶體，方便計算雜湊值（避免讀兩次檔案）
     content = file.file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large. Maximum allowed size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
 
     # MD5 用於快速去重：速度快，碰撞率在實務上可接受
     # SHA-256 用於精確內容比對（如需要）

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -19,6 +19,4 @@ class User(Base):
     # 只儲存雜湊值，永遠不儲存明文密碼
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
 
-    # default=datetime.utcnow（不加括號）：每次新增記錄時才呼叫函式，
-    # 若寫成 default=datetime.utcnow()（加括號）會在 class 載入時固定成同一個時間
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
