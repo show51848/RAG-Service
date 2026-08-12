@@ -24,9 +24,6 @@ def override_get_db():
         db.close()
 
 
-app.dependency_overrides[get_db] = override_get_db
-
-
 @pytest.fixture(autouse=True)
 def setup_db():
     """每個測試前後重建資料表，確保測試隔離。"""
@@ -37,8 +34,13 @@ def setup_db():
 
 @pytest.fixture
 def client():
+    # 綁定/還原限定在這個 fixture 的生命週期內，避免跟其他測試檔的
+    # app.dependency_overrides[get_db] 互相覆蓋（pytest 收集整個 tests/
+    # 目錄時會 import 全部檔案，模組層級的全域賦值會被後 import 的檔案蓋掉）
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
         yield c
+    app.dependency_overrides.pop(get_db, None)
 
 
 def _register_and_login(client: TestClient, username="alice", email="alice@test.com"):

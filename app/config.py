@@ -13,8 +13,11 @@ class Settings(BaseSettings):
     APP_ENV: Literal["development", "production"] = "development"
 
     # ── 資料庫 ────────────────────────────────────────────────────────────────
-    # SQLite 供本機開發；production 請換成 postgresql+asyncpg://...
-    DATABASE_URL: str = "sqlite:///./rag.db"
+    # PostgreSQL 為預設（搭配 docker-compose 的 postgres service）；
+    # 本機零安裝場景可覆寫為 sqlite:///./rag.db
+    # 注意：專案的 SQLAlchemy 是同步寫法，驅動要用 psycopg（v3, postgresql+psycopg://），
+    # 不是 asyncpg —— asyncpg 只支援 async engine，跟現有程式碼不相容
+    DATABASE_URL: str = "postgresql+psycopg://raguser:ragpassword@localhost:5432/ragdb"
 
     # ── JWT 認證 ──────────────────────────────────────────────────────────────
     # 無預設值 → 未設定時 pydantic 直接報錯，不會用不安全的值靜默啟動
@@ -98,6 +101,9 @@ class Settings(BaseSettings):
         # 優先讀取 .env 檔；若環境變數已存在則以環境變數為準
         env_file = ".env"
         env_file_encoding = "utf-8"
+        # POSTGRES_USER/PASSWORD/DB 只給 docker-compose 的變數代換用，
+        # 不是 Settings 的欄位，忽略而非報錯
+        extra = "ignore"
 
 
 # 全域單例：整個應用程式共用，避免重複解析設定

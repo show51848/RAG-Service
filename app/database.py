@@ -26,11 +26,15 @@ def create_tables():
     # 必須 import model 模組，Base.metadata 才能收集到這些 Table 的定義
     # noqa: F401 告訴 linter 這些看似「未使用」的 import 是刻意的
     from app.models import user, document  # noqa: F401
-    Base.metadata.create_all(bind=engine)
 
-    # SQLAlchemy 的 create_all 只能建立新表，無法自動新增欄位
-    # 因此手動執行遷移腳本補上後來新增的欄位
-    _migrate_add_content_hash()
+    # PostgreSQL 的 schema 交給 Alembic 管理（見 alembic/），不在這裡自動建表，
+    # 避免跟 migration history 打架。SQLite 維持原本零設定的開發體驗。
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(bind=engine)
+
+        # SQLAlchemy 的 create_all 只能建立新表，無法自動新增欄位
+        # 因此手動執行遷移腳本補上後來新增的欄位
+        _migrate_add_content_hash()
 
 
 def _migrate_add_content_hash():

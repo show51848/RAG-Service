@@ -17,7 +17,7 @@
 
 | Layer | Demo choice | Why it's fine for demo |
 |-------|-------------|------------------------|
-| Database | SQLite | Zero-setup, file-based, sufficient for single-node |
+| Database | PostgreSQL (Docker service) + Alembic migrations | Real RDBMS, FK/unique constraints enforced, `docker compose up` also runs migrations automatically. SQLite still works as a zero-setup fallback (`DATABASE_URL=sqlite:///./rag.db`) |
 | Vector store | ChromaDB (embedded) | No extra service needed; data persisted in `chroma_data/` volume |
 | Embedding | `all-MiniLM-L6-v2` via ONNX (local) | No API key, runs in-process, fast |
 | LLM | Claude Haiku via Anthropic API | Cheap, fast, good enough for RAG responses |
@@ -33,7 +33,7 @@ A production version of this service would replace or add:
 ```
 Demo                          Production
 ─────────────────────────────────────────────────────────────
-SQLite                   →    PostgreSQL (asyncpg + Alembic)
+PostgreSQL (sync psycopg) →   PostgreSQL + async SQLAlchemy (asyncpg)
 ChromaDB embedded        →    Qdrant / Pinecone (separate service)
 Synchronous ingestion    →    Celery + Redis (async task queue)
 Local file storage       →    S3-compatible object storage (boto3)
@@ -62,7 +62,7 @@ Secret in .env           →    AWS Secrets Manager / Vault
 │  └────┬─────┘  └────┬─────┘  └───────┬─────────┘    │
 │       │  JWT        │                │               │
 │  ┌────▼─────────────▼────────────────▼────────────┐  │
-│  │          SQLite  (SQLAlchemy ORM)               │  │
+│  │     PostgreSQL  (SQLAlchemy ORM + Alembic)       │  │
 │  │    users · documents (status / hash / chunks)  │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
@@ -152,6 +152,8 @@ ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 docker compose up --build
 ```
 
+會一併啟動 PostgreSQL service，並在 `api` 容器啟動前自動執行 `alembic upgrade head`，不需要額外手動 migration。
+
 ### 3. 開啟網頁
 
 瀏覽器前往 [http://localhost:8000](http://localhost:8000)
@@ -172,11 +174,20 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 
 cp .env.example .env        # 填入 SECRET_KEY 和 ANTHROPIC_API_KEY
+```
+
+若本機有自己起的 PostgreSQL，先套用 migration 再啟動：
+
+```bash
+alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
+沒有 Postgres 也想跑起來，可以把 `.env` 的 `DATABASE_URL` 改成 `sqlite:///./rag.db`（零安裝，`create_tables()` 會自動建表）。
+
 ```bash
-# 執行測試（不需要真實 API key，LLM 呼叫全部被 mock）
+# 執行測試（不需要真實 API key，LLM 呼叫全部被 mock；
+# 5 個 PostgreSQL 專屬測試需要本機有 Docker，沒有的話會 skip 而非 fail）
 pytest tests/ -v
 ```
 
@@ -359,15 +370,21 @@ rag-service/
 │   └── vectorstore/         # ChromaDB client 封裝
 ├── frontend/
 │   └── index.html           # 單頁前端 SPA（零框架）
+├── alembic/
+│   ├── env.py                # migration 連線字串來源：app.config.settings
+│   └── versions/              # migration 歷史
+├── alembic.ini
 ├── tests/
-│   ├── conftest.py          # 測試環境變數（在 app import 前設定）
+│   ├── conftest.py          # 測試環境變數 + PostgreSQL testcontainers fixtures
 │   ├── test_auth.py
 │   ├── test_docs.py
-│   └── test_chat.py
-├── Dockerfile               # 單階段 demo build（prod upgrade path 見檔案內註解）
-├── docker-compose.yml
-├── requirements.txt         # 僅 production 依賴
-├── requirements-dev.txt     # -r requirements.txt + pytest
+│   ├── test_chat.py
+│   ├── test_database_transactions.py    # unique constraint / rollback
+│   └── test_postgresql_migrations.py    # alembic upgrade / FK 強制
+├── Dockerfile               # 單階段 demo build；CMD 先跑 alembic upgrade head 再啟動 uvicorn
+├── docker-compose.yml       # postgres + api 兩個 service
+├── requirements.txt         # production 依賴（含 alembic、psycopg）
+├── requirements-dev.txt     # -r requirements.txt + pytest + testcontainers
 └── .env.example
 ```
 
@@ -381,7 +398,8 @@ rag-service/
 | `ANTHROPIC_API_KEY` | **必填** | Anthropic API 金鑰 |
 | `APP_ENV` | `development` | `development` 或 `production`，影響 CORS 策略 |
 | `ALLOWED_ORIGINS` | localhost 系列 | CORS 允許來源，production 請設為真實 domain |
-| `DATABASE_URL` | `sqlite:///./rag.db` | SQLAlchemy 連線字串 |
+| `DATABASE_URL` | `postgresql+psycopg://raguser:ragpassword@localhost:5432/ragdb` | SQLAlchemy 連線字串；本機零安裝可改 `sqlite:///./rag.db` |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `raguser` / `ragpassword` / `ragdb` | 給 `docker-compose.yml` 的 postgres service 讀取 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | JWT 過期時間（分鐘）|
 | `TOP_K` | `5` | 向量搜尋回傳最大筆數 |
 | `CHROMA_PERSIST_DIR` | `./chroma_data` | ChromaDB 持久化目錄 |
